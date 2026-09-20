@@ -1,7 +1,7 @@
 #pragma once
 
-#define AP_SSID "***"
-#define AP_PASS "***"
+#define AP_SSID "Vadim"
+#define AP_PASS "1997qwerty"
 
 #define I2S_DOUT 25
 #define I2S_BCLK 27
@@ -17,5 +17,5 @@
 
 #define ANALYZ_PIN 34
 
-#define ANALYZ_WIDTH (3 * 8)
+#define ANALYZ_WIDTH (2 * 8)
 #define RADIO_BUFFER (1600 * 25)  // default 1600*5, этого МАЛО

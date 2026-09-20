@@ -8,7 +8,6 @@ TaskHandle_t Task0;
 
 void setup() {
     xTaskCreatePinnedToCore(core0, "Task0", 10000, NULL, 1, &Task0, 0);
-
     Serial.begin(115200);
     WiFi.mode(WIFI_STA);
     WiFi.begin(AP_SSID, AP_PASS);
@@ -25,6 +24,7 @@ void loop() {
 
     if (reconnect) {
         audio.connecttohost(reconnect);
+        audio.setVolume(15);
         if (!audio.isRunning()) audio.pauseResume();
         reconnect = nullptr;
     }
