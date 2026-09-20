@@ -11,7 +11,6 @@
 #include "tmr.h"
 
 const char* stations[] = {
-    "https://uk3.internet-radio.com/proxy/majesticjukebox?mp=/live",
     "http://prmstrm.1.fm:8000/electronica",
     "http://prmstrm.1.fm:8000/x",
     "http://stream81.metacast.eu/radio1rock128",
