@@ -33,7 +33,7 @@ void setup() {
 
 void loop() {
     if (reconnect) {
-        btaudio.setVolume(15);
+        btaudio.volume(15);
         reconnect = nullptr;
     }
     if (!bt_connected) {
