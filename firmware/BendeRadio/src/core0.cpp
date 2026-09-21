@@ -9,21 +9,20 @@
 #include "soc/timer_group_reg.h"
 #include "soc/timer_group_struct.h"
 #include "tmr.h"
+#include "btAudio.h"
 
-const char* stations[] = {
-    "http://prmstrm.1.fm:8000/electronica",
-    "http://prmstrm.1.fm:8000/x",
-    "http://stream81.metacast.eu/radio1rock128",
-};
 
 // data
 MAX7219<5, 1, MTRX_CS, MTRX_DAT, MTRX_CLK> mtrx;
 Tmr square_tmr;
 Data data;
 EEManager memory(data);
-Audio audio;
+extern btAudio btaudio;
+
 String streamname;
 const char* reconnect = nullptr;
+
+
 
 // func
 // ========================= MATRIX =========================
@@ -77,6 +76,10 @@ void change_state() {
         draw_eye(1);
         draw_eyeb(0, 2, 2, 4);
         draw_eyeb(1, 2, 2, 4);
+        
+        // btaudio.begin();
+        // btaudio.reconnect();
+        btaudio.I2S(I2S_BCLK, I2S_DOUT, I2S_LRC);
     } else {
         mtrx.setBright((uint8_t)0);
         draw_eye(0);
@@ -84,6 +87,7 @@ void change_state() {
         mtrx.rect(ANALYZ_WIDTH, 0, ANALYZ_WIDTH + 16 - 1, 3, GFX_CLEAR);
         draw_eyeb(0, 3, 5);
         draw_eyeb(1, 3, 5);
+        btaudio.end();
     }
     mtrx.update();
 }
@@ -151,12 +155,7 @@ void core0(void* p) {
     upd_bright();
     mtrx.clear();
     mtrx.update();
-
-    audio.setBufsize(RADIO_BUFFER, -1);
-    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-    audio.setVolume(data.state ? data.vol : 0);
-    data.station = constrain(data.station, 0, sizeof(stations) / sizeof(char*) - 1);
-    reconnect = stations[data.station];
+    btaudio.volume(data.state ? data.vol : 0);
 
     // ========================= LOOP =========================
     for (;;) {
@@ -234,18 +233,11 @@ void core0(void* p) {
                 if (eb.pressing()) {
                     switch (eb.getClicks()) {
                         case 0:
-                            data.station += eb.dir();
-                            data.station = constrain(data.station, 0, sizeof(stations) / sizeof(char*) - 1);
-                            print_val('s', data.station);
-                            matrix_tmr.start();
-                            station_changed = 1;
-                            break;
-                        case 1:
                             data.bright_mouth += eb.dir();
                             data.bright_mouth = constrain(data.bright_mouth, 0, 16);
                             upd_bright();
                             break;
-                        case 2:
+                        case 1:
                             data.bright_eyes += eb.dir();
                             data.bright_eyes = constrain(data.bright_eyes, 0, 16);
                             upd_bright();
@@ -256,7 +248,7 @@ void core0(void* p) {
                         angry_tmr.start();
                         data.vol += eb.dir();
                         data.vol = constrain(data.vol, 0, 21);
-                        audio.setVolume(data.vol);
+                        btaudio.volume(data.vol);
                         print_val('v', data.vol);
                         matrix_tmr.start();
                     }
@@ -267,7 +259,7 @@ void core0(void* p) {
                 switch (eb.getClicks()) {
                     case 1:
                         data.state = !data.state;
-                        audio.setVolume(data.state ? data.vol : 0);
+                        btaudio.volume(data.state ? data.vol : 0);
                         change_state();
                         break;
                     case 2:
@@ -283,8 +275,6 @@ void core0(void* p) {
             if (eb.release()) {
                 if (station_changed) {
                     station_changed = 0;
-                    reconnect = stations[data.station];
-                    if (audio.isRunning()) audio.pauseResume();
                 }
             }
             memory.update();
