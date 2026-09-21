@@ -150,12 +150,18 @@ void core0(void* p) {
 
     EEPROM.begin(memory.blockSize());
     memory.begin(0, 'b');
+    data.mode = constrain(data.mode, 0, 1);
+    data.vol = constrain(data.vol, 0, 21);
+    data.bright_mouth = constrain(data.bright_mouth, 0, 16);
+    data.bright_eyes = constrain(data.bright_eyes, 0, 16);
+
+    // memory.begin(0, 'c'); // clear memory.
 
     mtrx.begin();
     upd_bright();
     mtrx.clear();
     mtrx.update();
-    btaudio.volume(data.state ? data.vol : 0);
+    btaudio.volume(data.state ? data.vol / 21.0 : 0.0);
 
     // ========================= LOOP =========================
     for (;;) {
@@ -248,7 +254,7 @@ void core0(void* p) {
                         angry_tmr.start();
                         data.vol += eb.dir();
                         data.vol = constrain(data.vol, 0, 21);
-                        btaudio.volume(data.vol);
+                        btaudio.volume(data.vol / 21.0);
                         print_val('v', data.vol);
                         matrix_tmr.start();
                     }
@@ -259,7 +265,7 @@ void core0(void* p) {
                 switch (eb.getClicks()) {
                     case 1:
                         data.state = !data.state;
-                        btaudio.volume(data.state ? data.vol : 0);
+                        btaudio.volume(data.state ? data.vol / 21.0 : 0.0);
                         change_state();
                         break;
                     case 2:
