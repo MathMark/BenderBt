@@ -77,8 +77,8 @@ void change_state() {
         draw_eyeb(0, 2, 2, 4);
         draw_eyeb(1, 2, 2, 4);
         
-        // btaudio.begin();
-        // btaudio.reconnect();
+        btaudio.begin();
+        btaudio.reconnect();
         btaudio.I2S(I2S_BCLK, I2S_DOUT, I2S_LRC);
     } else {
         mtrx.setBright((uint8_t)0);
