@@ -121,20 +121,6 @@ void analyz0(uint8_t vol) {
     }
 }
 
-void analyz1(uint8_t vol) {
-    static uint8_t prevs[ANALYZ_WIDTH];
-    for (uint8_t i = 0; i < ANALYZ_WIDTH - 1; i++) prevs[i] = prevs[i + 1];
-    prevs[ANALYZ_WIDTH - 1] = 9 * vol / (100 + 1);
-    for (uint8_t i = 0; i < ANALYZ_WIDTH; i++) {
-        uint8_t mask = ((1 << prevs[i]) - 1) << ((8 - prevs[i]) >> 1);
-        for (uint8_t n = 0; n < 8; n++) {
-            if (mask & 1) mtrx.dot(i, n);
-            mask >>= 1;
-        }
-    }
-}
-
-
 static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                            Tmr& angry_tmr, Tmr& matrix_tmr) {
     if (!eb.tick()) return false;
@@ -168,9 +154,6 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                 change_state();
                 break;
             case 2:
-                data.mode = (data.mode + 1) % 2;
-                break;
-            case 3:
                 data.trsh = sound.getMax() * 2 / 3;
                 sound.setTrsh(data.trsh);
                 break;
@@ -180,7 +163,6 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
     memory.update();
     return true;
 }
-
 
 // ========================= CORE 0 =========================
 void core0(void* p) {
@@ -290,10 +272,7 @@ void core0(void* p) {
 
 
             mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
-            switch (data.mode) {
-                case 0: analyz0(sound.getVol()); break;
-                case 1: analyz1(sound.getVol()); break;
-            }
+            analyz0(sound.getVol());
             mtrx.update();
         }
         handle_encoder(eb, sound, angry_tmr, matrix_tmr);
