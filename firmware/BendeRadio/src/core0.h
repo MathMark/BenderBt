@@ -15,7 +15,6 @@ struct Data {
 };
 
 extern Audio audio;
-extern const char* reconnect;
 
 void change_state();
 void anim_search();

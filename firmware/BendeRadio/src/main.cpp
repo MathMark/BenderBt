@@ -19,9 +19,6 @@ void setup() {
 }
 
 void loop() {
-    if (reconnect) {
-        btaudio.volume(15);
-        reconnect = nullptr;
-    }
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
 

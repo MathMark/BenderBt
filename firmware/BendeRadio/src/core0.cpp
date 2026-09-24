@@ -5,42 +5,56 @@
 #include <FastLED.h>
 #include <GyverMAX7219.h>
 #include <VolAnalyzer.h>
+#include <esp_a2dp_api.h>
 
-#include "soc/timer_group_reg.h"
-#include "soc/timer_group_struct.h"
-#include "tmr.h"
 #include "btAudio.h"
+#include "tmr.h"
 
+#define VOL_MAX 21
 
-// data
+// ========================= DATA =========================
 MAX7219<5, 1, MTRX_CS, MTRX_DAT, MTRX_CLK> mtrx;
 Tmr square_tmr;
 Data data;
 EEManager memory(data);
 extern btAudio btaudio;
 
-String streamname;
-const char* reconnect = nullptr;
+volatile bool bt_connected = false;
 
+// ========================= BLUETOOTH =========================
+void a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param) {
+    if (event == ESP_A2D_CONNECTION_STATE_EVT) {
+        bt_connected = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
+        Serial.printf("[BT] connected = %d\n", bt_connected);
+    }
+}
 
-
-// func
 // ========================= MATRIX =========================
 void upd_bright() {
     uint8_t m = data.bright_mouth, e = data.bright_eyes;
     uint8_t br[] = {m, m, m, e, e};
     mtrx.setBright(br);
 }
-void print_val(char c, uint8_t v) {
+
+// индикатор громкости: рот раскрывается и заполняется слева
+void draw_vol(uint8_t v, uint8_t vmax) {
     mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
-    mtrx.setCursor(8 * 0 + 2, 1);
-    mtrx.print(c);
-    mtrx.setCursor(8 * 1 + 2, 1);
-    mtrx.print(v / 10);
-    mtrx.setCursor(8 * 2 + 2, 1);
-    mtrx.print(v % 10);
+
+    uint8_t len = (uint32_t)v * ANALYZ_WIDTH / vmax;
+    if (v && !len) len = 1;
+    uint8_t open = (uint32_t)v * 3 / (vmax + 1);   // 0..2
+
+    if (len) {
+        mtrx.lineH(3, 0, len - 1);
+        mtrx.lineH(4, 0, len - 1);
+        for (uint8_t i = 1; i <= open; i++) {
+            mtrx.lineH(3 - i, 0, len - 1);
+            mtrx.lineH(4 + i, 0, len - 1);
+        }
+    }
     mtrx.update();
 }
+
 // ========================= EYES =========================
 void draw_eye(uint8_t i) {
     uint8_t x = ANALYZ_WIDTH + i * 8;
@@ -50,23 +64,29 @@ void draw_eye(uint8_t i) {
     mtrx.lineH(0, 2 + x, 5 + x);
     mtrx.lineH(7, 2 + x, 5 + x);
 }
+
 void draw_eyeb(uint8_t i, int x, int y, int w = 2) {
     x += ANALYZ_WIDTH + i * 8;
     mtrx.rect(x, y, x + w - 1, y + w - 1, GFX_CLEAR);
 }
+
+// анимация ожидания подключения: прищур, зрачки бегают
 void anim_search() {
     static int8_t pos = 4, dir = 1;
     static Tmr tmr(50);
-    if (tmr) {
-        pos += dir;
-        if (pos >= 6) dir = -1;
-        if (pos <= 0) dir = 1;
-        mtrx.rect(ANALYZ_WIDTH, 2, ANALYZ_WIDTH + 16 - 1, 5, GFX_FILL);
-        draw_eyeb(0, pos, 3);
-        draw_eyeb(1, pos, 3);
-        mtrx.update();
-    }
+    if (!tmr) return;
+
+    pos += dir;
+    if (pos >= 6) dir = -1;
+    if (pos <= 0) dir = 1;
+
+    mtrx.rect(ANALYZ_WIDTH, 0, ANALYZ_WIDTH + 15, 7, GFX_CLEAR);   // чистим область глаз
+    mtrx.rect(ANALYZ_WIDTH, 2, ANALYZ_WIDTH + 15, 5, GFX_FILL);    // щель прищура
+    draw_eyeb(0, pos, 3);
+    draw_eyeb(1, pos, 3);
+    mtrx.update();
 }
+
 void change_state() {
     mtrx.clear();
     if (data.state) {
@@ -76,18 +96,13 @@ void change_state() {
         draw_eye(1);
         draw_eyeb(0, 2, 2, 4);
         draw_eyeb(1, 2, 2, 4);
-        
-        btaudio.begin();
-        btaudio.reconnect();
-        btaudio.I2S(I2S_BCLK, I2S_DOUT, I2S_LRC);
     } else {
         mtrx.setBright((uint8_t)0);
         draw_eye(0);
         draw_eye(1);
-        mtrx.rect(ANALYZ_WIDTH, 0, ANALYZ_WIDTH + 16 - 1, 3, GFX_CLEAR);
+        mtrx.rect(ANALYZ_WIDTH, 0, ANALYZ_WIDTH + 15, 3, GFX_CLEAR);
         draw_eyeb(0, 3, 5);
         draw_eyeb(1, 3, 5);
-        btaudio.end();
     }
     mtrx.update();
 }
@@ -105,21 +120,13 @@ void analyz0(uint8_t vol) {
         mtrx.dot(i, val);
     }
 }
+
 void analyz1(uint8_t vol) {
     static uint8_t prevs[ANALYZ_WIDTH];
     for (uint8_t i = 0; i < ANALYZ_WIDTH - 1; i++) prevs[i] = prevs[i + 1];
     prevs[ANALYZ_WIDTH - 1] = 9 * vol / (100 + 1);
     for (uint8_t i = 0; i < ANALYZ_WIDTH; i++) {
         uint8_t mask = ((1 << prevs[i]) - 1) << ((8 - prevs[i]) >> 1);
-        // 0-00000000-4
-        // 1-00001000-3
-        // 2-00011000-3
-        // 3-00011100-2
-        // 4-00111100-2
-        // 5-00111110-1
-        // 6-01111110-1
-        // 7-01111111-0
-        // 8-11111111-0
         for (uint8_t n = 0; n < 8; n++) {
             if (mask & 1) mtrx.dot(i, n);
             mask >>= 1;
@@ -127,12 +134,9 @@ void analyz1(uint8_t vol) {
     }
 }
 
-// ========================= SYSTEM =========================
-void audio_showstreamtitle(const char* info) {
-}
-
+// ========================= CORE 0 =========================
 void core0(void* p) {
-    // ========================= SETUP =========================
+    // ---------- SETUP ----------
     EncButton eb(ENC_S1, ENC_S2, ENC_BTN);
     VolAnalyzer sound(ANALYZ_PIN);
     sound.setAmpliDt(300);
@@ -150,67 +154,83 @@ void core0(void* p) {
 
     EEPROM.begin(memory.blockSize());
     memory.begin(0, 'b');
-    data.mode = constrain(data.mode, 0, 1);
-    data.vol = constrain(data.vol, 0, 21);
+    data.mode         = constrain(data.mode, 0, 1);
+    data.vol          = constrain(data.vol, 0, VOL_MAX);
     data.bright_mouth = constrain(data.bright_mouth, 0, 16);
-    data.bright_eyes = constrain(data.bright_eyes, 0, 16);
-
-    // memory.begin(0, 'c'); // clear memory.
+    data.bright_eyes  = constrain(data.bright_eyes, 0, 16);
 
     mtrx.begin();
     upd_bright();
     mtrx.clear();
     mtrx.update();
-    btaudio.volume(data.state ? data.vol / 21.0 : 0.0);
 
-    // ========================= LOOP =========================
+    Serial.println(F("[BT] starting..."));
+    btaudio.begin();
+    btaudio.I2S(I2S_BCLK, I2S_DOUT, I2S_LRC);
+    esp_a2d_register_callback(a2dp_cb);        // строго после begin()
+    btaudio.reconnect();
+    btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
+    Serial.println(F("[BT] ready, waiting for phone"));
+
+    bool was_connected = false;
+
+    // ---------- LOOP ----------
     for (;;) {
         square_tmr.tick();
         matrix_tmr.tick();
         angry_tmr.tick();
         memory.tick();
 
-        if (data.state && !square_tmr.state()) {
-            if (eye_tmr) {
-                draw_eye(0);
-                draw_eye(1);
-                if (angry_tmr.state()) {
-                    draw_eyeb(0, 3, 3);
-                    draw_eyeb(1, 3, 3);
-                    mtrx.lineH(0, ANALYZ_WIDTH, ANALYZ_WIDTH + 16 - 1, GFX_CLEAR);
-                    mtrx.lineH(1, ANALYZ_WIDTH + 5, ANALYZ_WIDTH + 5 + 6 - 1, GFX_CLEAR);
-                    mtrx.lineH(2, ANALYZ_WIDTH + 6, ANALYZ_WIDTH + 6 + 4 - 1, GFX_CLEAR);
-                    mtrx.lineH(3, ANALYZ_WIDTH + 7, ANALYZ_WIDTH + 7 + 2 - 1, GFX_CLEAR);
-                } else {
-                    if (eb.pressing()) {
-                        draw_eyeb(0, 4, 3, 3);
-                        draw_eyeb(1, 1, 3, 3);
-                    } else {
-                        static uint16_t pos;
-                        pos += 15;
-                        uint8_t x = inoise8(pos);
-                        uint8_t y = inoise8(pos + UINT16_MAX / 4);
-                        x = constrain(x, 40, 255 - 40);
-                        y = constrain(y, 40, 255 - 40);
-                        x = map(x, 40, 255 - 40, 2, 5);
-                        y = map(y, 40, 255 - 40, 2, 5);
-                        if (pulse) {
-                            pulse = 0;
-                            int8_t sx = random(-1, 1);
-                            int8_t sy = random(-1, 1);
-                            draw_eyeb(0, x + sx, y + sy, 3);
-                            draw_eyeb(1, x + sx, y + sy, 3);
-                        } else {
-                            draw_eyeb(0, x, y);
-                            draw_eyeb(1, x, y);
-                        }
-                    }
-                }
-                mtrx.update();
-            }
+        // ----- смена состояния подключения -----
+        if (bt_connected != was_connected) {
+            was_connected = bt_connected;
+            mtrx.clear();
+            if (bt_connected) change_state();
+            mtrx.update();
         }
 
-        if (sound.tick() && data.state && !matrix_tmr.state()) {
+        // ----- глаза -----
+        if (!bt_connected) {
+            anim_search();
+        } else if (data.state && !square_tmr.state() && eye_tmr) {
+            draw_eye(0);
+            draw_eye(1);
+
+            if (angry_tmr.state()) {
+                draw_eyeb(0, 3, 3);
+                draw_eyeb(1, 3, 3);
+                mtrx.lineH(0, ANALYZ_WIDTH, ANALYZ_WIDTH + 15, GFX_CLEAR);
+                mtrx.lineH(1, ANALYZ_WIDTH + 5, ANALYZ_WIDTH + 10, GFX_CLEAR);
+                mtrx.lineH(2, ANALYZ_WIDTH + 6, ANALYZ_WIDTH + 9, GFX_CLEAR);
+                mtrx.lineH(3, ANALYZ_WIDTH + 7, ANALYZ_WIDTH + 8, GFX_CLEAR);
+            } else if (eb.pressing()) {
+                draw_eyeb(0, 4, 3, 3);
+                draw_eyeb(1, 1, 3, 3);
+            } else {
+                static uint16_t pos;
+                pos += 15;
+                uint8_t x = inoise8(pos);
+                uint8_t y = inoise8(pos + UINT16_MAX / 4);
+                x = map(constrain(x, 40, 215), 40, 215, 2, 5);
+                y = map(constrain(y, 40, 215), 40, 215, 2, 5);
+
+                if (pulse) {
+                    pulse = 0;
+                    int8_t sx = random(-1, 1);
+                    int8_t sy = random(-1, 1);
+                    draw_eyeb(0, x + sx, y + sy, 3);
+                    draw_eyeb(1, x + sx, y + sy, 3);
+                } else {
+                    draw_eyeb(0, x, y);
+                    draw_eyeb(1, x, y);
+                }
+            }
+            mtrx.update();
+        }
+
+        // ----- рот: анализатор звука -----
+        bool snd = sound.tick();
+        if (snd && bt_connected && data.state && !matrix_tmr.state()) {
             if (sound.pulse()) pulse = 1;
             // Serial.print(sound.getVol());  // громкость 0-100
             // Serial.print(',');
@@ -220,44 +240,35 @@ void core0(void* p) {
             // Serial.print(',');
             // Serial.println(sound.getMax());  // амплитудная огибающая
 
+
             mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
             switch (data.mode) {
-                case 0:
-                    analyz0(sound.getVol());
-                    break;
-                case 1:
-                    analyz1(sound.getVol());
-                    break;
+                case 0: analyz0(sound.getVol()); break;
+                case 1: analyz1(sound.getVol()); break;
             }
             mtrx.update();
         }
 
+        // ----- энкодер -----
         if (eb.tick()) {
-            static bool station_changed = 0;
-
             if (eb.turn()) {
                 if (eb.pressing()) {
                     switch (eb.getClicks()) {
                         case 0:
-                            data.bright_mouth += eb.dir();
-                            data.bright_mouth = constrain(data.bright_mouth, 0, 16);
+                            data.bright_mouth = constrain(data.bright_mouth + eb.dir(), 0, 16);
                             upd_bright();
                             break;
                         case 1:
-                            data.bright_eyes += eb.dir();
-                            data.bright_eyes = constrain(data.bright_eyes, 0, 16);
+                            data.bright_eyes = constrain(data.bright_eyes + eb.dir(), 0, 16);
                             upd_bright();
                             break;
                     }
-                } else {
-                    if (data.state) {
-                        angry_tmr.start();
-                        data.vol += eb.dir();
-                        data.vol = constrain(data.vol, 0, 21);
-                        btaudio.volume(data.vol / 21.0);
-                        print_val('v', data.vol);
-                        matrix_tmr.start();
-                    }
+                } else if (data.state) {
+                    angry_tmr.start();
+                    data.vol = constrain(data.vol + eb.dir(), 0, VOL_MAX);
+                    btaudio.volume(data.vol / (float)VOL_MAX);
+                    draw_vol(data.vol, VOL_MAX);
+                    matrix_tmr.start();
                 }
             }
 
@@ -265,7 +276,7 @@ void core0(void* p) {
                 switch (eb.getClicks()) {
                     case 1:
                         data.state = !data.state;
-                        btaudio.volume(data.state ? data.vol / 21.0 : 0.0);
+                        btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
                         change_state();
                         break;
                     case 2:
@@ -277,18 +288,9 @@ void core0(void* p) {
                         break;
                 }
             }
-
-            if (eb.release()) {
-                if (station_changed) {
-                    station_changed = 0;
-                }
-            }
             memory.update();
         }
 
-        // vTaskDelay(1);
-        TIMERG0.wdt_wprotect = TIMG_WDT_WKEY_VALUE;  // write enable
-        TIMERG0.wdt_feed = 1;                        // feed dog
-        TIMERG0.wdt_wprotect = 0;                    // write protect
+        vTaskDelay(1);
     }
 }
