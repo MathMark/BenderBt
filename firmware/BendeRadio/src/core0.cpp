@@ -134,6 +134,54 @@ void analyz1(uint8_t vol) {
     }
 }
 
+
+static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
+                           Tmr& angry_tmr, Tmr& matrix_tmr) {
+    if (!eb.tick()) return false;
+
+    if (eb.turn()) {
+        if (eb.pressing()) {
+            switch (eb.getClicks()) {
+                case 0:
+                    data.bright_mouth = constrain(data.bright_mouth + eb.dir(), 0, 16);
+                    upd_bright();
+                    break;
+                case 1:
+                    data.bright_eyes = constrain(data.bright_eyes + eb.dir(), 0, 16);
+                    upd_bright();
+                    break;
+            }
+        } else if (data.state) {
+            angry_tmr.start();
+            data.vol = constrain(data.vol + eb.dir(), 0, VOL_MAX);
+            btaudio.volume(data.vol / (float)VOL_MAX);
+            draw_vol(data.vol, VOL_MAX);
+            matrix_tmr.start();
+        }
+    }
+
+    if (eb.hasClicks()) {
+        switch (eb.getClicks()) {
+            case 1:
+                data.state = !data.state;
+                btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
+                change_state();
+                break;
+            case 2:
+                data.mode = (data.mode + 1) % 2;
+                break;
+            case 3:
+                data.trsh = sound.getMax() * 2 / 3;
+                sound.setTrsh(data.trsh);
+                break;
+        }
+    }
+
+    memory.update();
+    return true;
+}
+
+
 // ========================= CORE 0 =========================
 void core0(void* p) {
     // ---------- SETUP ----------
@@ -248,49 +296,7 @@ void core0(void* p) {
             }
             mtrx.update();
         }
-
-        // ----- энкодер -----
-        if (eb.tick()) {
-            if (eb.turn()) {
-                if (eb.pressing()) {
-                    switch (eb.getClicks()) {
-                        case 0:
-                            data.bright_mouth = constrain(data.bright_mouth + eb.dir(), 0, 16);
-                            upd_bright();
-                            break;
-                        case 1:
-                            data.bright_eyes = constrain(data.bright_eyes + eb.dir(), 0, 16);
-                            upd_bright();
-                            break;
-                    }
-                } else if (data.state) {
-                    angry_tmr.start();
-                    data.vol = constrain(data.vol + eb.dir(), 0, VOL_MAX);
-                    btaudio.volume(data.vol / (float)VOL_MAX);
-                    draw_vol(data.vol, VOL_MAX);
-                    matrix_tmr.start();
-                }
-            }
-
-            if (eb.hasClicks()) {
-                switch (eb.getClicks()) {
-                    case 1:
-                        data.state = !data.state;
-                        btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
-                        change_state();
-                        break;
-                    case 2:
-                        if (++data.mode >= 2) data.mode = 0;
-                        break;
-                    case 3:
-                        data.trsh = sound.getMax() * 2 / 3;
-                        sound.setTrsh(data.trsh);
-                        break;
-                }
-            }
-            memory.update();
-        }
-
+        handle_encoder(eb, sound, angry_tmr, matrix_tmr);
         vTaskDelay(1);
     }
 }
