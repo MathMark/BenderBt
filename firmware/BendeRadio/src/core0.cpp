@@ -12,7 +12,7 @@
 
 #define VOL_MAX 21
 
-// ========================= DATA =========================
+
 MAX7219<5, 1, MTRX_CS, MTRX_DAT, MTRX_CLK> mtrx;
 Tmr square_tmr;
 Data data;
@@ -21,7 +21,12 @@ extern btAudio btaudio;
 
 volatile bool bt_connected = false;
 
-// ========================= BLUETOOTH =========================
+
+/*
+    * A2DP callback function
+    * This function is called when the A2DP connection state changes
+    * It updates the bt_connected variable and prints the connection state to the serial monitor
+*/
 void a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param) {
     if (event == ESP_A2D_CONNECTION_STATE_EVT) {
         bt_connected = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
@@ -36,7 +41,7 @@ void upd_bright() {
     mtrx.setBright(br);
 }
 
-// индикатор громкости: рот раскрывается и заполняется слева
+// Volume indicator
 void draw_vol(uint8_t v, uint8_t vmax) {
     mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
 
@@ -55,7 +60,6 @@ void draw_vol(uint8_t v, uint8_t vmax) {
     mtrx.update();
 }
 
-// ========================= EYES =========================
 void draw_eye(uint8_t i) {
     uint8_t x = ANALYZ_WIDTH + i * 8;
     mtrx.rect(1 + x, 1, 6 + x, 6, GFX_FILL);
@@ -70,7 +74,7 @@ void draw_eyeb(uint8_t i, int x, int y, int w = 2) {
     mtrx.rect(x, y, x + w - 1, y + w - 1, GFX_CLEAR);
 }
 
-// анимация ожидания подключения: прищур, зрачки бегают
+// animation of connection waiting
 void anim_search() {
     static int8_t pos = 4, dir = 1;
     static Tmr tmr(50);
@@ -164,6 +168,30 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
     return true;
 }
 
+// Рисует веки поверх уже нарисованного глаза.
+// phase: 0 — открыт, 1 — полуприкрыт, 2 — щель, 3 — закрыт
+static void draw_lids(uint8_t phase) {
+    if (!phase) return;
+    uint8_t x0 = ANALYZ_WIDTH, x1 = ANALYZ_WIDTH + 15;
+
+    if (phase >= 1) {                       // верх и низ по одной строке
+        mtrx.lineH(0, x0, x1, GFX_CLEAR);
+        mtrx.lineH(7, x0, x1, GFX_CLEAR);
+    }
+    if (phase >= 2) {                       // ещё по строке
+        mtrx.lineH(1, x0, x1, GFX_CLEAR);
+        mtrx.lineH(6, x0, x1, GFX_CLEAR);
+    }
+    if (phase >= 3) {                       // почти закрыто, остаётся щель
+        mtrx.lineH(2, x0, x1, GFX_CLEAR);
+        mtrx.lineH(5, x0, x1, GFX_CLEAR);
+    }
+}
+
+static uint32_t calcBlinkNext() {
+    return millis() + random(10000, 30000);
+}
+
 // ========================= CORE 0 =========================
 void core0(void* p) {
     // ---------- SETUP ----------
@@ -203,6 +231,11 @@ void core0(void* p) {
     Serial.println(F("[BT] ready, waiting for phone"));
 
     bool was_connected = false;
+
+    Tmr blink_step(40);          // шаг анимации века
+    uint32_t blink_next = calcBlinkNext(); 
+    int8_t blink_phase = 0;      // 0 — не моргаем, 1..3 вниз, 4..6 обратно
+
 
     // ---------- LOOP ----------
     for (;;) {
@@ -255,6 +288,23 @@ void core0(void* p) {
                     draw_eyeb(1, x, y);
                 }
             }
+                        // ----- моргание -----
+            if (!blink_phase && millis() > blink_next) {
+                blink_phase = 1;
+            }
+            if (blink_phase) {
+                if (blink_step) {
+                    blink_phase++;
+                    if (blink_phase > 6) {
+                        blink_phase = 0;
+                        blink_next = calcBlinkNext();
+                    }
+                }
+                uint8_t p = (blink_phase <= 3) ? blink_phase : (7 - blink_phase);
+                draw_lids(p);
+            }
+
+            mtrx.update();
             mtrx.update();
         }
 
