@@ -41,22 +41,19 @@ void upd_bright() {
     mtrx.setBright(br);
 }
 
-// Volume indicator
+
 void draw_vol(uint8_t v, uint8_t vmax) {
     mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
 
-    uint8_t len = (uint32_t)v * ANALYZ_WIDTH / vmax;
-    if (v && !len) len = 1;
-    uint8_t open = (uint32_t)v * 3 / (vmax + 1);   // 0..2
+    mtrx.lineH(2, 0, ANALYZ_WIDTH - 1, GFX_FILL);
+    mtrx.lineH(5, 0, ANALYZ_WIDTH - 1, GFX_FILL);
+    mtrx.lineV(0, 2, 5, GFX_FILL);
+    mtrx.lineV(ANALYZ_WIDTH - 1, 2, 5, GFX_FILL);
 
-    if (len) {
-        mtrx.lineH(3, 0, len - 1);
-        mtrx.lineH(4, 0, len - 1);
-        for (uint8_t i = 1; i <= open; i++) {
-            mtrx.lineH(3 - i, 0, len - 1);
-            mtrx.lineH(4 + i, 0, len - 1);
-        }
-    }
+    uint8_t inner = ANALYZ_WIDTH - 2;
+    uint8_t pos = 1 + (uint32_t)v * (inner - 1) / vmax;
+    mtrx.lineV(pos, 3, 4, GFX_FILL);
+
     mtrx.update();
 }
 
