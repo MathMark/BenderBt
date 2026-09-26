@@ -5,13 +5,16 @@
 #include <FastLED.h>
 #include <GyverMAX7219.h>
 #include <VolAnalyzer.h>
+#include <arduinoFFT.h>
 #include <esp_a2dp_api.h>
 
 #include "btAudio.h"
 #include "tmr.h"
 
-#define VOL_MAX 22
-#define DEBUG_ADC 0        // 1 — печатать состояние АЦП в порт
+#define VOL_MAX   22
+#define FFT_N     128      // отсчётов (степень двойки)
+#define FFT_SR    10000    // частота дискретизации, Гц
+#define DEBUG_FFT 0        // 1 — печатать спектр в порт
 
 MAX7219<5, 1, MTRX_CS, MTRX_DAT, MTRX_CLK> mtrx;
 Tmr square_tmr;
@@ -20,10 +23,118 @@ EEManager memory(data);
 extern btAudio btaudio;
 
 volatile bool bt_connected = false;
+static bool g_beat = false;          // удар по низам из спектра
 
-/*
- * A2DP callback: следит за состоянием подключения телефона.
- */
+// ========================= FFT =========================
+static float vReal[FFT_N];
+static float vImag[FFT_N];
+static ArduinoFFT<float> FFT(vReal, vImag, FFT_N, FFT_SR);
+
+static uint8_t bandEdge[ANALYZ_WIDTH + 1];
+static uint8_t bars[ANALYZ_WIDTH];
+static uint8_t peaks[ANALYZ_WIDTH];
+static uint8_t peakHold[ANALYZ_WIDTH];
+
+static void fft_init() {
+    const float lo = 2.0f, hi = 58.0f;       // бины 2…58 ≈ 156 Гц…4.5 кГц
+    for (uint8_t i = 0; i <= ANALYZ_WIDTH; i++) {
+        float t = (float)i / ANALYZ_WIDTH;
+        bandEdge[i] = (uint8_t)(lo * powf(hi / lo, t) + 0.5f);
+    }
+    for (uint8_t i = 0; i < ANALYZ_WIDTH; i++)
+        if (bandEdge[i + 1] <= bandEdge[i]) bandEdge[i + 1] = bandEdge[i] + 1;
+    for (uint8_t i = 0; i <= ANALYZ_WIDTH; i++)
+        if (bandEdge[i] > FFT_N / 2 - 1) bandEdge[i] = FFT_N / 2 - 1;
+}
+
+static void fft_sample() {
+    const uint32_t step = 1000000UL / FFT_SR;
+    uint32_t t = micros();
+    for (uint16_t i = 0; i < FFT_N; i++) {
+        vReal[i] = analogRead(ANALYZ_PIN);
+        vImag[i] = 0.0f;
+        t += step;
+        while ((int32_t)(micros() - t) < 0) {}
+    }
+}
+
+// Режим 1: настоящий спектр, столбики снизу вверх
+static void analyz_fft() {
+    fft_sample();
+
+    float mean = 0;
+    for (uint16_t i = 0; i < FFT_N; i++) mean += vReal[i];
+    mean /= FFT_N;
+    for (uint16_t i = 0; i < FFT_N; i++) vReal[i] -= mean;
+
+    FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
+    FFT.compute(FFTDirection::Forward);
+    FFT.complexToMagnitude();
+
+    float raw[ANALYZ_WIDTH], top = 0;
+    for (uint8_t b = 0; b < ANALYZ_WIDTH; b++) {
+        float s = 0;
+        uint8_t n = 0;
+        for (uint8_t k = bandEdge[b]; k < bandEdge[b + 1]; k++) { s += vReal[k]; n++; }
+        raw[b] = n ? s / n : 0;
+        raw[b] *= 1.0f + b * 0.07f;          // компенсация спада верхов
+        if (raw[b] > top) top = raw[b];
+    }
+
+    static float ceilv = 60.0f;
+    if (top > ceilv) ceilv = top;
+    else ceilv *= 0.997f;
+    if (ceilv < 40.0f) ceilv = 40.0f;
+
+    mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
+
+    for (uint8_t b = 0; b < ANALYZ_WIDTH; b++) {
+        int h = (int)(raw[b] * 8.0f / ceilv);
+        h = constrain(h, 0, 8);
+
+        if (h >= bars[b]) bars[b] = h;
+        else if (bars[b]) bars[b]--;
+
+        if (bars[b]) mtrx.rect(b, 8 - bars[b], b, 7, GFX_FILL);
+
+        if (bars[b] >= peaks[b]) { peaks[b] = bars[b]; peakHold[b] = 12; }
+        else if (peakHold[b]) peakHold[b]--;
+        else if (peaks[b]) peaks[b]--;
+
+        if (peaks[b] > 0 && peaks[b] < 8) mtrx.dot(b, 7 - peaks[b]);
+    }
+
+    static uint8_t prev_bass = 0;
+    uint8_t bass = (bars[0] + bars[1] + bars[2]) / 3;
+    if (bass >= 6 && prev_bass < 4) g_beat = true;
+    prev_bass = bass;
+
+#if DEBUG_FFT
+    static uint32_t dbg;
+    if (millis() - dbg > 500) {
+        dbg = millis();
+        Serial.printf("[fft] ceil=%.0f bass=%u | ", ceilv, bass);
+        for (uint8_t b = 0; b < ANALYZ_WIDTH; b += 3) Serial.printf("%d ", bars[b]);
+        Serial.println();
+    }
+#endif
+}
+
+// Режим 0: кривая из шума Перлина, амплитуда по громкости
+static void analyz0(uint8_t vol) {
+    static uint16_t offs;
+    offs += 20 * vol / 100;
+    for (uint8_t i = 0; i < ANALYZ_WIDTH; i++) {
+        int16_t val = inoise8(i * 50, offs);
+        val -= 128;
+        val = val * vol / 100;
+        val += 128;
+        val = map(val, 45, 255 - 45, 0, 7);
+        mtrx.dot(i, val);
+    }
+}
+
+// ========================= BLUETOOTH =========================
 void a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param) {
     if (event == ESP_A2D_CONNECTION_STATE_EVT) {
         bt_connected = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
@@ -68,7 +179,6 @@ void draw_eyeb(uint8_t i, int x, int y, int w = 2) {
     mtrx.rect(x, y, x + w - 1, y + w - 1, GFX_CLEAR);
 }
 
-// Веки поверх нарисованного глаза. phase: 1 — чуть, 3 — почти закрыт.
 static void draw_lids(uint8_t phase) {
     if (!phase) return;
     uint8_t x0 = ANALYZ_WIDTH, x1 = ANALYZ_WIDTH + 15;
@@ -125,20 +235,6 @@ static uint32_t calcBlinkNext() {
     return millis() + random(3000, 8000);
 }
 
-// ========================= ANALYZ =========================
-void analyz0(uint8_t vol) {
-    static uint16_t offs;
-    offs += 20 * vol / 100;
-    for (uint8_t i = 0; i < ANALYZ_WIDTH; i++) {
-        int16_t val = inoise8(i * 50, offs);
-        val -= 128;
-        val = val * vol / 100;
-        val += 128;
-        val = map(val, 45, 255 - 45, 0, 7);
-        mtrx.dot(i, val);
-    }
-}
-
 // ========================= ENCODER =========================
 static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                            Tmr& angry_tmr, Tmr& matrix_tmr) {
@@ -167,13 +263,19 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
 
     if (eb.hasClicks()) {
         switch (eb.getClicks()) {
-            case 1:
+            case 1:                                    // вкл/выкл
                 data.state = !data.state;
-                matrix_tmr.stop();                     // убрать шкалу громкости
+                matrix_tmr.stop();
                 btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
                 change_state();
                 break;
-            case 2:                                    // калибровка порога
+            case 2:                                    // смена режима рта
+                data.mode = data.mode ? 0 : 1;
+                mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
+                mtrx.update();
+                Serial.printf("[mode] %s\n", data.mode ? "spectrum" : "wave");
+                break;
+            case 3:                                    // калибровка порога (режим 0)
                 data.trsh = sound.getMax() * 2 / 3;
                 sound.setTrsh(data.trsh);
                 Serial.printf("[cal] trsh = %u\n", data.trsh);
@@ -194,23 +296,28 @@ void core0(void* p) {
     Tmr matrix_tmr(1000);
     Tmr angry_tmr(800);
     Tmr blink_step(40);
+    Tmr fft_tmr(35);
     square_tmr.timerMode(1);
     matrix_tmr.timerMode(1);
     angry_tmr.timerMode(1);
     bool pulse = 0;
 
     EEPROM.begin(memory.blockSize());
-    memory.begin(0, 'b');                              // ключ сменён: сброс старых значений
+    memory.begin(0, 'c');
     data.vol          = constrain(data.vol, 0, VOL_MAX);
+    data.mode         = constrain(data.mode, 0, 1);
     data.bright_mouth = constrain(data.bright_mouth, 0, 16);
     data.bright_eyes  = constrain(data.bright_eyes, 0, 16);
     data.trsh         = constrain(data.trsh, 100, 2000);
 
     VolAnalyzer sound(ANALYZ_PIN);
     sound.setAmpliDt(300);
-    sound.setTrsh(data.trsh);                          // из памяти, с калибровкой по 2 кликам
+    sound.setTrsh(data.trsh);
     sound.setPulseMin(40);
     sound.setPulseMax(80);
+
+    pinMode(ANALYZ_PIN, INPUT);
+    fft_init();
 
     mtrx.begin();
     upd_bright();
@@ -220,10 +327,10 @@ void core0(void* p) {
     Serial.println(F("[BT] starting..."));
     btaudio.begin();
     btaudio.I2S(I2S_BCLK, I2S_DOUT, I2S_LRC);
-    esp_a2d_register_callback(a2dp_cb);                // строго после begin()
+    esp_a2d_register_callback(a2dp_cb);        // строго после begin()
     btaudio.reconnect();
     btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
-    Serial.printf("[cfg] trsh=%u vol=%d\n", data.trsh, data.vol);
+    Serial.printf("[cfg] mode=%u trsh=%u\n", data.mode, data.trsh);
     Serial.println(F("[BT] ready, waiting for phone"));
 
     bool was_connected = false;
@@ -246,22 +353,15 @@ void core0(void* p) {
             mtrx.update();
         }
 
-#if DEBUG_ADC
-        static uint32_t adc_dbg;
-        if (millis() - adc_dbg > 500) {
-            adc_dbg = millis();
-            uint16_t mn = 4095, mx = 0;
-            for (uint8_t i = 0; i < 64; i++) {
-                uint16_t val = analogRead(ANALYZ_PIN);
-                if (val < mn) mn = val;
-                if (val > mx) mx = val;
-            }
-            Serial.printf("[adc] min=%u max=%u span=%u | raw=%u vol=%u max=%u trsh=%u\n",
-                          mn, mx, mx - mn,
-                          sound.getRaw(), sound.getVol(),
-                          sound.getMax(), sound.getTrsh());
+        // ----- пульс для зрачков -----
+        bool snd = false;
+        if (data.mode == 0) {
+            snd = sound.tick();                        // в режиме волны — от VolAnalyzer
+            if (snd && sound.pulse()) pulse = 1;
+        } else if (g_beat) {
+            g_beat = false;                            // в режиме спектра — от низов
+            pulse = 1;
         }
-#endif
 
         // ----- глаза -----
         if (!bt_connected) {
@@ -290,7 +390,7 @@ void core0(void* p) {
 
                 if (pulse) {
                     pulse = 0;
-                    int8_t sx = random(-1, 1);         // одно смещение на оба глаза
+                    int8_t sx = random(-1, 1);
                     int8_t sy = random(-1, 1);
                     draw_eyeb(0, x + sx, y + sy, 3);
                     draw_eyeb(1, x + sx, y + sy, 3);
@@ -317,17 +417,21 @@ void core0(void* p) {
         }
 
         // ----- рот -----
-        bool snd = sound.tick();
-        if (snd && sound.pulse()) pulse = 1;
-
         if (matrix_tmr.state()) {
             mouth_cleared = false;                     // шкалу рисует энкодер
         } else if (bt_connected && data.state) {
             mouth_cleared = false;
-            if (snd) {
-                mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
-                analyz0(sound.getVol());
-                mtrx.update();
+            if (data.mode == 0) {
+                if (snd) {
+                    mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
+                    analyz0(sound.getVol());
+                    mtrx.update();
+                }
+            } else {
+                if (fft_tmr) {
+                    analyz_fft();
+                    mtrx.update();
+                }
             }
         } else if (!mouth_cleared) {
             mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
