@@ -10,8 +10,7 @@
 #include "btAudio.h"
 #include "tmr.h"
 
-#define VOL_MAX 21
-
+#define VOL_MAX 22
 
 MAX7219<5, 1, MTRX_CS, MTRX_DAT, MTRX_CLK> mtrx;
 Tmr square_tmr;
@@ -21,12 +20,9 @@ extern btAudio btaudio;
 
 volatile bool bt_connected = false;
 
-
 /*
-    * A2DP callback function
-    * This function is called when the A2DP connection state changes
-    * It updates the bt_connected variable and prints the connection state to the serial monitor
-*/
+ * A2DP callback: следит за состоянием подключения телефона.
+ */
 void a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param) {
     if (event == ESP_A2D_CONNECTION_STATE_EVT) {
         bt_connected = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
@@ -40,7 +36,6 @@ void upd_bright() {
     uint8_t br[] = {m, m, m, e, e};
     mtrx.setBright(br);
 }
-
 
 void draw_vol(uint8_t v, uint8_t vmax) {
     mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
@@ -57,6 +52,7 @@ void draw_vol(uint8_t v, uint8_t vmax) {
     mtrx.update();
 }
 
+// ========================= EYES =========================
 void draw_eye(uint8_t i) {
     uint8_t x = ANALYZ_WIDTH + i * 8;
     mtrx.rect(1 + x, 1, 6 + x, 6, GFX_FILL);
@@ -71,7 +67,23 @@ void draw_eyeb(uint8_t i, int x, int y, int w = 2) {
     mtrx.rect(x, y, x + w - 1, y + w - 1, GFX_CLEAR);
 }
 
-// animation of connection waiting
+// Веки поверх нарисованного глаза. phase: 1 — чуть, 3 — почти закрыт.
+static void draw_lids(uint8_t phase) {
+    if (!phase) return;
+    uint8_t x0 = ANALYZ_WIDTH, x1 = ANALYZ_WIDTH + 15;
+
+    mtrx.lineH(0, x0, x1, GFX_CLEAR);
+    mtrx.lineH(7, x0, x1, GFX_CLEAR);
+    if (phase >= 2) {
+        mtrx.lineH(1, x0, x1, GFX_CLEAR);
+        mtrx.lineH(6, x0, x1, GFX_CLEAR);
+    }
+    if (phase >= 3) {
+        mtrx.lineH(2, x0, x1, GFX_CLEAR);
+        mtrx.lineH(5, x0, x1, GFX_CLEAR);
+    }
+}
+
 void anim_search() {
     static int8_t pos = 4, dir = 1;
     static Tmr tmr(50);
@@ -81,8 +93,8 @@ void anim_search() {
     if (pos >= 6) dir = -1;
     if (pos <= 0) dir = 1;
 
-    mtrx.rect(ANALYZ_WIDTH, 0, ANALYZ_WIDTH + 15, 7, GFX_CLEAR);   // чистим область глаз
-    mtrx.rect(ANALYZ_WIDTH, 2, ANALYZ_WIDTH + 15, 5, GFX_FILL);    // щель прищура
+    mtrx.rect(ANALYZ_WIDTH, 0, ANALYZ_WIDTH + 15, 7, GFX_CLEAR);
+    mtrx.rect(ANALYZ_WIDTH, 2, ANALYZ_WIDTH + 15, 5, GFX_FILL);
     draw_eyeb(0, pos, 3);
     draw_eyeb(1, pos, 3);
     mtrx.update();
@@ -108,6 +120,10 @@ void change_state() {
     mtrx.update();
 }
 
+static uint32_t calcBlinkNext() {
+    return millis() + random(3000, 8000);
+}
+
 // ========================= ANALYZ =========================
 void analyz0(uint8_t vol) {
     static uint16_t offs;
@@ -122,6 +138,7 @@ void analyz0(uint8_t vol) {
     }
 }
 
+// ========================= ENCODER =========================
 static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                            Tmr& angry_tmr, Tmr& matrix_tmr) {
     if (!eb.tick()) return false;
@@ -151,12 +168,14 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
         switch (eb.getClicks()) {
             case 1:
                 data.state = !data.state;
+                matrix_tmr.stop();                     // убрать шкалу громкости
                 btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
                 change_state();
                 break;
-            case 2:
+            case 2:                                    // калибровка порога
                 data.trsh = sound.getMax() * 2 / 3;
                 sound.setTrsh(data.trsh);
+                Serial.printf("[cal] trsh = %u\n", data.trsh);
                 break;
         }
     }
@@ -165,43 +184,21 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
     return true;
 }
 
-// Рисует веки поверх уже нарисованного глаза.
-// phase: 0 — открыт, 1 — полуприкрыт, 2 — щель, 3 — закрыт
-static void draw_lids(uint8_t phase) {
-    if (!phase) return;
-    uint8_t x0 = ANALYZ_WIDTH, x1 = ANALYZ_WIDTH + 15;
-
-    if (phase >= 1) {                       // верх и низ по одной строке
-        mtrx.lineH(0, x0, x1, GFX_CLEAR);
-        mtrx.lineH(7, x0, x1, GFX_CLEAR);
-    }
-    if (phase >= 2) {                       // ещё по строке
-        mtrx.lineH(1, x0, x1, GFX_CLEAR);
-        mtrx.lineH(6, x0, x1, GFX_CLEAR);
-    }
-    if (phase >= 3) {                       // почти закрыто, остаётся щель
-        mtrx.lineH(2, x0, x1, GFX_CLEAR);
-        mtrx.lineH(5, x0, x1, GFX_CLEAR);
-    }
-}
-
-static uint32_t calcBlinkNext() {
-    return millis() + random(10000, 30000);
-}
-
 // ========================= CORE 0 =========================
 void core0(void* p) {
     // ---------- SETUP ----------
     EncButton eb(ENC_S1, ENC_S2, ENC_BTN);
     VolAnalyzer sound(ANALYZ_PIN);
     sound.setAmpliDt(300);
-    sound.setTrsh(data.trsh);
+    //sound.setTrsh(data.trsh);
+    sound.setTrsh(400);
     sound.setPulseMin(40);
     sound.setPulseMax(80);
 
-    Tmr eye_tmr(150);
+    Tmr eye_tmr(80);
     Tmr matrix_tmr(1000);
     Tmr angry_tmr(800);
+    Tmr blink_step(40);
     square_tmr.timerMode(1);
     matrix_tmr.timerMode(1);
     angry_tmr.timerMode(1);
@@ -228,11 +225,9 @@ void core0(void* p) {
     Serial.println(F("[BT] ready, waiting for phone"));
 
     bool was_connected = false;
-
-    Tmr blink_step(40);          // шаг анимации века
-    uint32_t blink_next = calcBlinkNext(); 
-    int8_t blink_phase = 0;      // 0 — не моргаем, 1..3 вниз, 4..6 обратно
-
+    bool mouth_cleared = false;
+    uint32_t blink_next = calcBlinkNext();
+    int8_t blink_phase = 0;
 
     // ---------- LOOP ----------
     for (;;) {
@@ -247,6 +242,22 @@ void core0(void* p) {
             mtrx.clear();
             if (bt_connected) change_state();
             mtrx.update();
+        }
+
+        // ----- отладка АЦП -----
+        static uint32_t adc_dbg;
+        if (millis() - adc_dbg > 500) {
+            adc_dbg = millis();
+            uint16_t mn = 4095, mx = 0;
+            for (uint8_t i = 0; i < 64; i++) {
+                uint16_t val = analogRead(ANALYZ_PIN);
+                if (val < mn) mn = val;
+                if (val > mx) mx = val;
+            }
+            Serial.printf("[adc] min=%u max=%u span=%u | raw=%u vol=%u max=%u trsh=%u\n",
+                          mn, mx, mx - mn,
+                          sound.getRaw(), sound.getVol(),
+                          sound.getMax(), sound.getTrsh());
         }
 
         // ----- глаза -----
@@ -276,19 +287,16 @@ void core0(void* p) {
 
                 if (pulse) {
                     pulse = 0;
-                    int8_t sx = random(-1, 1);
-                    int8_t sy = random(-1, 1);
-                    draw_eyeb(0, x + sx, y + sy, 3);
-                    draw_eyeb(1, x + sx, y + sy, 3);
+                    draw_eyeb(0, x + random(-1, 1), y + random(-1, 2), 3);
+                    draw_eyeb(1, x + random(-1, 1), y + random(-1, 2), 3);
                 } else {
                     draw_eyeb(0, x, y);
                     draw_eyeb(1, x, y);
                 }
             }
-                        // ----- моргание -----
-            if (!blink_phase && millis() > blink_next) {
-                blink_phase = 1;
-            }
+
+            // ----- моргание -----
+            if (!blink_phase && millis() > blink_next) blink_phase = 1;
             if (blink_phase) {
                 if (blink_step) {
                     blink_phase++;
@@ -297,31 +305,31 @@ void core0(void* p) {
                         blink_next = calcBlinkNext();
                     }
                 }
-                uint8_t p = (blink_phase <= 3) ? blink_phase : (7 - blink_phase);
-                draw_lids(p);
+                draw_lids((blink_phase <= 3) ? blink_phase : (7 - blink_phase));
             }
 
             mtrx.update();
-            mtrx.update();
         }
 
-        // ----- рот: анализатор звука -----
+        // ----- рот -----
         bool snd = sound.tick();
-        if (snd && bt_connected && data.state && !matrix_tmr.state()) {
-            if (sound.pulse()) pulse = 1;
-            // Serial.print(sound.getVol());  // громкость 0-100
-            // Serial.print(',');
-            // Serial.print(sound.getRaw());  // сырая величина
-            // Serial.print(',');
-            // Serial.print(sound.getTrsh());
-            // Serial.print(',');
-            // Serial.println(sound.getMax());  // амплитудная огибающая
+        if (snd && sound.pulse()) pulse = 1;
 
-
+        if (matrix_tmr.state()) {
+            mouth_cleared = false;                     // шкалу рисует энкодер
+        } else if (bt_connected && data.state) {
+            mouth_cleared = false;
+            if (snd) {
+                mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
+                analyz0(sound.getVol());
+                mtrx.update();
+            }
+        } else if (!mouth_cleared) {
             mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
-            analyz0(sound.getVol());
             mtrx.update();
+            mouth_cleared = true;
         }
+
         handle_encoder(eb, sound, angry_tmr, matrix_tmr);
         vTaskDelay(1);
     }
