@@ -11,6 +11,7 @@
 #include "tmr.h"
 
 #define VOL_MAX 22
+#define DEBUG_ADC 0        // 1 — печатать состояние АЦП в порт
 
 MAX7219<5, 1, MTRX_CS, MTRX_DAT, MTRX_CLK> mtrx;
 Tmr square_tmr;
@@ -188,12 +189,6 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
 void core0(void* p) {
     // ---------- SETUP ----------
     EncButton eb(ENC_S1, ENC_S2, ENC_BTN);
-    VolAnalyzer sound(ANALYZ_PIN);
-    sound.setAmpliDt(300);
-    //sound.setTrsh(data.trsh);
-    sound.setTrsh(400);
-    sound.setPulseMin(40);
-    sound.setPulseMax(80);
 
     Tmr eye_tmr(80);
     Tmr matrix_tmr(1000);
@@ -205,11 +200,17 @@ void core0(void* p) {
     bool pulse = 0;
 
     EEPROM.begin(memory.blockSize());
-    memory.begin(0, 'b');
-    data.mode         = constrain(data.mode, 0, 1);
+    memory.begin(0, 'b');                              // ключ сменён: сброс старых значений
     data.vol          = constrain(data.vol, 0, VOL_MAX);
     data.bright_mouth = constrain(data.bright_mouth, 0, 16);
     data.bright_eyes  = constrain(data.bright_eyes, 0, 16);
+    data.trsh         = constrain(data.trsh, 100, 2000);
+
+    VolAnalyzer sound(ANALYZ_PIN);
+    sound.setAmpliDt(300);
+    sound.setTrsh(data.trsh);                          // из памяти, с калибровкой по 2 кликам
+    sound.setPulseMin(40);
+    sound.setPulseMax(80);
 
     mtrx.begin();
     upd_bright();
@@ -219,9 +220,10 @@ void core0(void* p) {
     Serial.println(F("[BT] starting..."));
     btaudio.begin();
     btaudio.I2S(I2S_BCLK, I2S_DOUT, I2S_LRC);
-    esp_a2d_register_callback(a2dp_cb);        // строго после begin()
+    esp_a2d_register_callback(a2dp_cb);                // строго после begin()
     btaudio.reconnect();
     btaudio.volume(data.state ? data.vol / (float)VOL_MAX : 0.0);
+    Serial.printf("[cfg] trsh=%u vol=%d\n", data.trsh, data.vol);
     Serial.println(F("[BT] ready, waiting for phone"));
 
     bool was_connected = false;
@@ -244,7 +246,7 @@ void core0(void* p) {
             mtrx.update();
         }
 
-        // ----- отладка АЦП -----
+#if DEBUG_ADC
         static uint32_t adc_dbg;
         if (millis() - adc_dbg > 500) {
             adc_dbg = millis();
@@ -259,6 +261,7 @@ void core0(void* p) {
                           sound.getRaw(), sound.getVol(),
                           sound.getMax(), sound.getTrsh());
         }
+#endif
 
         // ----- глаза -----
         if (!bt_connected) {
@@ -287,8 +290,10 @@ void core0(void* p) {
 
                 if (pulse) {
                     pulse = 0;
-                    draw_eyeb(0, x + random(-1, 1), y + random(-1, 2), 3);
-                    draw_eyeb(1, x + random(-1, 1), y + random(-1, 2), 3);
+                    int8_t sx = random(-1, 1);         // одно смещение на оба глаза
+                    int8_t sy = random(-1, 1);
+                    draw_eyeb(0, x + sx, y + sy, 3);
+                    draw_eyeb(1, x + sx, y + sy, 3);
                 } else {
                     draw_eyeb(0, x, y);
                     draw_eyeb(1, x, y);
