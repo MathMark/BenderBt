@@ -179,22 +179,6 @@ void draw_eyeb(uint8_t i, int x, int y, int w = 2) {
     mtrx.rect(x, y, x + w - 1, y + w - 1, GFX_CLEAR);
 }
 
-static void draw_lids(uint8_t phase) {
-    if (!phase) return;
-    uint8_t x0 = ANALYZ_WIDTH, x1 = ANALYZ_WIDTH + 15;
-
-    mtrx.lineH(0, x0, x1, GFX_CLEAR);
-    mtrx.lineH(7, x0, x1, GFX_CLEAR);
-    if (phase >= 2) {
-        mtrx.lineH(1, x0, x1, GFX_CLEAR);
-        mtrx.lineH(6, x0, x1, GFX_CLEAR);
-    }
-    if (phase >= 3) {
-        mtrx.lineH(2, x0, x1, GFX_CLEAR);
-        mtrx.lineH(5, x0, x1, GFX_CLEAR);
-    }
-}
-
 void anim_search() {
     static int8_t pos = 4, dir = 1;
     static Tmr tmr(50);
@@ -231,9 +215,6 @@ void change_state() {
     mtrx.update();
 }
 
-static uint32_t calcBlinkNext() {
-    return millis() + random(3000, 8000);
-}
 
 // ========================= ENCODER =========================
 static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
@@ -295,7 +276,6 @@ void core0(void* p) {
     Tmr eye_tmr(80);
     Tmr matrix_tmr(1000);
     Tmr angry_tmr(800);
-    Tmr blink_step(40);
     Tmr fft_tmr(35);
     square_tmr.timerMode(1);
     matrix_tmr.timerMode(1);
@@ -335,9 +315,7 @@ void core0(void* p) {
 
     bool was_connected = false;
     bool mouth_cleared = false;
-    uint32_t blink_next = calcBlinkNext();
-    int8_t blink_phase = 0;
-
+  
     // ---------- LOOP ----------
     for (;;) {
         square_tmr.tick();
@@ -398,19 +376,6 @@ void core0(void* p) {
                     draw_eyeb(0, x, y);
                     draw_eyeb(1, x, y);
                 }
-            }
-
-            // ----- моргание -----
-            if (!blink_phase && millis() > blink_next) blink_phase = 1;
-            if (blink_phase) {
-                if (blink_step) {
-                    blink_phase++;
-                    if (blink_phase > 6) {
-                        blink_phase = 0;
-                        blink_next = calcBlinkNext();
-                    }
-                }
-                draw_lids((blink_phase <= 3) ? blink_phase : (7 - blink_phase));
             }
 
             mtrx.update();
