@@ -85,8 +85,8 @@ static void fft_init() {
 }
 
 // Режим 1: настоящий спектр, столбики снизу вверх
-static void analyz_fft() {
-    if (!adcFrameReady) return;
+static bool analyz_fft() {
+    if (!adcFrameReady) return false;
 
     for (uint16_t i = 0; i < FFT_N; i++) {
         vReal[i] = adcSamples[i];
@@ -154,6 +154,7 @@ static void analyz_fft() {
         Serial.println();
     }
 #endif
+    return true;
 }
 
 // Режим 0: кривая из шума Перлина, амплитуда по громкости
@@ -314,7 +315,6 @@ void core0(void* p) {
     Tmr eye_tmr(80);
     Tmr matrix_tmr(1000);
     Tmr angry_tmr(800);
-    Tmr fft_tmr(35);
     square_tmr.timerMode(1);
     matrix_tmr.timerMode(1);
     angry_tmr.timerMode(1);
@@ -360,6 +360,7 @@ void core0(void* p) {
         matrix_tmr.tick();
         angry_tmr.tick();
         memory.tick();
+        handle_encoder(eb, sound, angry_tmr, matrix_tmr);
 
         // ----- смена состояния подключения -----
         if (bt_connected != was_connected) {
@@ -431,8 +432,7 @@ void core0(void* p) {
                     mtrx.update();
                 }
             } else {
-                if (fft_tmr) {
-                    analyz_fft();
+                if (analyz_fft()) {
                     mtrx.update();
                 }
             }
@@ -442,7 +442,6 @@ void core0(void* p) {
             mouth_cleared = true;
         }
 
-        handle_encoder(eb, sound, angry_tmr, matrix_tmr);
         vTaskDelay(1);
     }
 }
