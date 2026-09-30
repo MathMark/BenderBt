@@ -345,7 +345,10 @@ void core0(void* p) {
     data.trsh         = constrain(data.trsh, 100, 2000);
 
     VolAnalyzer sound(ANALYZ_PIN);
-    sound.setAmpliDt(300);
+    sound.setVolDt(5);
+    sound.setVolK(8);
+    sound.setAmpliDt(20);
+    sound.setAmpliK(20);
     sound.setTrsh(data.trsh);
     sound.setPulseMin(40);
     sound.setPulseMax(80);
