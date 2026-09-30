@@ -25,6 +25,7 @@ extern btAudio btaudio;
 
 volatile bool bt_connected = false;
 static bool g_beat = false;          // удар по низам из спектра
+static bool waveNeedsClear = true;
 
 // ========================= FFT =========================
 static float vReal[FFT_N];
@@ -160,14 +161,26 @@ static bool analyz_fft() {
 // Режим 0: кривая из шума Перлина, амплитуда по громкости
 static void analyz0(uint8_t vol) {
     static uint16_t offs;
+    static int8_t prevY[ANALYZ_WIDTH];
+    static bool initialized = false;
+
+    if (waveNeedsClear || !initialized) {
+        mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
+        for (uint8_t i = 0; i < ANALYZ_WIDTH; i++) prevY[i] = -1;
+        waveNeedsClear = false;
+        initialized = true;
+    }
+
     offs += 20 * vol / 100;
     for (uint8_t i = 0; i < ANALYZ_WIDTH; i++) {
+        if (prevY[i] >= 0 && prevY[i] < 8) mtrx.dot(i, prevY[i], 0);
         int16_t val = inoise8(i * 50, offs);
         val -= 128;
         val = val * vol / 100;
         val += 128;
         val = map(val, 45, 255 - 45, 0, 7);
         mtrx.dot(i, val);
+        prevY[i] = val;
     }
 }
 
@@ -187,6 +200,7 @@ void upd_bright() {
 }
 
 void draw_vol(uint8_t v, uint8_t vmax) {
+    waveNeedsClear = true;
     mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
 
     mtrx.lineH(2, 0, ANALYZ_WIDTH - 1, GFX_FILL);
@@ -233,6 +247,7 @@ void anim_search() {
 }
 
 void change_state() {
+    waveNeedsClear = true;
     mtrx.clear();
     if (data.state) {
         upd_bright();
@@ -289,6 +304,7 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                 break;
             case 2:                                    // смена режима рта
                 data.mode = data.mode ? 0 : 1;
+                waveNeedsClear = true;
                 if (data.mode) fft_sampling_start();
                 else fft_sampling_stop();
                 mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
@@ -427,7 +443,6 @@ void core0(void* p) {
             mouth_cleared = false;
             if (data.mode == 0) {
                 if (snd) {
-                    mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
                     analyz0(sound.getVol());
                     mtrx.update();
                 }
