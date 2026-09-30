@@ -18,4 +18,5 @@ extern Audio audio;
 
 void change_state();
 void anim_search();
+void fft_adc_init();
 void core0(void *p);

@@ -7,6 +7,7 @@
 #include <VolAnalyzer.h>
 #include <arduinoFFT.h>
 #include <esp_a2dp_api.h>
+#include <driver/adc.h>
 
 #include "btAudio.h"
 #include "tmr.h"
@@ -29,11 +30,47 @@ static bool g_beat = false;          // удар по низам из спект
 static float vReal[FFT_N];
 static float vImag[FFT_N];
 static ArduinoFFT<float> FFT(vReal, vImag, FFT_N, FFT_SR);
+static volatile uint16_t adcSamples[FFT_N];
+static volatile uint16_t adcSampleIndex = 0;
+static volatile bool adcFrameReady = false;
+static hw_timer_t* adcSampleTimer = nullptr;
 
 static uint8_t bandEdge[ANALYZ_WIDTH + 1];
 static uint8_t bars[ANALYZ_WIDTH];
 static uint8_t peaks[ANALYZ_WIDTH];
 static uint8_t peakHold[ANALYZ_WIDTH];
+
+// GPIO34 is ADC1_CHANNEL_6. The timer runs at 1 MHz and samples every 100 us.
+static void IRAM_ATTR adc_sample_isr() {
+    if (!adcFrameReady && adcSampleIndex < FFT_N) {
+        adcSamples[adcSampleIndex] = adc1_get_raw(ADC1_CHANNEL_6);
+        if (++adcSampleIndex == FFT_N) adcFrameReady = true;
+    }
+}
+
+void fft_adc_init() {
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_12);
+
+    adcSampleTimer = timerBegin(0, 80, true);   // 80 MHz / 80 = 1 MHz
+    if (!adcSampleTimer) return;
+    timerAttachInterrupt(adcSampleTimer, &adc_sample_isr, true);
+    timerAlarmWrite(adcSampleTimer, 100, true); // 10 kHz
+}
+
+static void fft_sampling_start() {
+    if (!adcSampleTimer) return;
+    adcSampleIndex = 0;
+    adcFrameReady = false;
+    timerAlarmEnable(adcSampleTimer);
+}
+
+static void fft_sampling_stop() {
+    if (!adcSampleTimer) return;
+    timerAlarmDisable(adcSampleTimer);
+    adcSampleIndex = 0;
+    adcFrameReady = false;
+}
 
 static void fft_init() {
     const float lo = 2.0f, hi = 58.0f;       // бины 2…58 ≈ 156 Гц…4.5 кГц
@@ -47,20 +84,19 @@ static void fft_init() {
         if (bandEdge[i] > FFT_N / 2 - 1) bandEdge[i] = FFT_N / 2 - 1;
 }
 
-static void fft_sample() {
-    const uint32_t step = 1000000UL / FFT_SR;
-    uint32_t t = micros();
-    for (uint16_t i = 0; i < FFT_N; i++) {
-        vReal[i] = analogRead(ANALYZ_PIN);
-        vImag[i] = 0.0f;
-        t += step;
-        while ((int32_t)(micros() - t) < 0) {}
-    }
-}
-
 // Режим 1: настоящий спектр, столбики снизу вверх
 static void analyz_fft() {
-    fft_sample();
+    if (!adcFrameReady) return;
+
+    for (uint16_t i = 0; i < FFT_N; i++) {
+        vReal[i] = adcSamples[i];
+        vImag[i] = 0.0f;
+    }
+
+    // The ISR ignores samples while the frame is full. Resetting the index
+    // and flag rearms collection while FFT processing continues.
+    adcSampleIndex = 0;
+    adcFrameReady = false;
 
     float mean = 0;
     for (uint16_t i = 0; i < FFT_N; i++) mean += vReal[i];
@@ -252,6 +288,8 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                 break;
             case 2:                                    // смена режима рта
                 data.mode = data.mode ? 0 : 1;
+                if (data.mode) fft_sampling_start();
+                else fft_sampling_stop();
                 mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
                 mtrx.update();
                 Serial.printf("[mode] %s\n", data.mode ? "spectrum" : "wave");
@@ -296,8 +334,8 @@ void core0(void* p) {
     sound.setPulseMin(40);
     sound.setPulseMax(80);
 
-    pinMode(ANALYZ_PIN, INPUT);
     fft_init();
+    if (data.mode) fft_sampling_start();
 
     mtrx.begin();
     upd_bright();
