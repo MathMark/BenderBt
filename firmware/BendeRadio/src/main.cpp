@@ -11,7 +11,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println(F("\n=== BOOT ==="));
-    fft_adc_init();  // setup() runs on Arduino core 1; timer ISR is allocated there
+    fft_adc_init();  // create the paced ADC sampler task on core 1
     xTaskCreatePinnedToCore(core0, "Task0", 20480, NULL, 1, &Task0, 0);
 }
 

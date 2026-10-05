@@ -23,7 +23,8 @@ Data data;
 EEManager memory(data);
 extern btAudio btaudio;
 
-volatile bool bt_connected = false;
+static portMUX_TYPE connectionMux = portMUX_INITIALIZER_UNLOCKED;
+static bool bt_connected = false;
 static bool g_beat = false;          // удар по низам из спектра
 static bool waveNeedsClear = true;
 
@@ -31,46 +32,124 @@ static bool waveNeedsClear = true;
 static float vReal[FFT_N];
 static float vImag[FFT_N];
 static ArduinoFFT<float> FFT(vReal, vImag, FFT_N, FFT_SR);
-static volatile uint16_t adcSamples[FFT_N];
-static volatile uint16_t adcSampleIndex = 0;
-static volatile bool adcFrameReady = false;
-static hw_timer_t* adcSampleTimer = nullptr;
+struct AdcFrame {
+    uint16_t samples[FFT_N];
+    uint32_t generation;
+};
+static QueueHandle_t adcFrameQueue = nullptr;
+static portMUX_TYPE adcControlMux = portMUX_INITIALIZER_UNLOCKED;
+static bool adcSamplingEnabled = false;
+static bool adcReadActive = false;
+static uint32_t adcSamplingGeneration = 0;
 
 static uint8_t bandEdge[ANALYZ_WIDTH + 1];
 static uint8_t bars[ANALYZ_WIDTH];
 static uint8_t peaks[ANALYZ_WIDTH];
 static uint8_t peakHold[ANALYZ_WIDTH];
 
-// GPIO34 is ADC1_CHANNEL_6. The timer runs at 1 MHz and samples every 100 us.
-static void IRAM_ATTR adc_sample_isr() {
-    if (!adcFrameReady && adcSampleIndex < FFT_N) {
-        adcSamples[adcSampleIndex] = adc1_get_raw(ADC1_CHANNEL_6);
-        if (++adcSampleIndex == FFT_N) adcFrameReady = true;
+static bool adc_sample_begin(uint32_t* generation) {
+    bool begin = false;
+    portENTER_CRITICAL(&adcControlMux);
+    if (adcSamplingEnabled && !adcReadActive) {
+        adcReadActive = true;
+        *generation = adcSamplingGeneration;
+        begin = true;
+    }
+    portEXIT_CRITICAL(&adcControlMux);
+    return begin;
+}
+
+static void adc_sample_end() {
+    portENTER_CRITICAL(&adcControlMux);
+    adcReadActive = false;
+    portEXIT_CRITICAL(&adcControlMux);
+}
+
+static bool adc_sampling_is_enabled() {
+    portENTER_CRITICAL(&adcControlMux);
+    bool enabled = adcSamplingEnabled;
+    portEXIT_CRITICAL(&adcControlMux);
+    return enabled;
+}
+
+static bool adc_sample_is_active() {
+    portENTER_CRITICAL(&adcControlMux);
+    bool active = adcReadActive;
+    portEXIT_CRITICAL(&adcControlMux);
+    return active;
+}
+
+static bool adc_generation_is_current(uint32_t generation) {
+    portENTER_CRITICAL(&adcControlMux);
+    bool current = adcSamplingEnabled && adcSamplingGeneration == generation;
+    portEXIT_CRITICAL(&adcControlMux);
+    return current;
+}
+
+static void adc_sampler_task(void*) {
+    AdcFrame frame;
+    for (;;) {
+        if (!adc_sampling_is_enabled()) {
+            vTaskDelay(1);
+            continue;
+        }
+
+        uint16_t i = 0;
+        uint32_t nextSample = micros();
+        while (i < FFT_N) {
+            while ((int32_t)(micros() - nextSample) < 0) {}
+            uint32_t generation;
+            if (!adc_sample_begin(&generation)) break;
+            if (i && generation != frame.generation) {
+                adc_sample_end();
+                break;
+            }
+            if (!i) frame.generation = generation;
+            frame.samples[i++] = adc1_get_raw(ADC1_CHANNEL_6);
+            adc_sample_end();
+            nextSample += 100;  // nominal 10 kHz
+            if ((int32_t)(micros() - nextSample) > 0) nextSample = micros() + 100;
+        }
+
+        if (i == FFT_N && adc_generation_is_current(frame.generation)) {
+            xQueueOverwrite(adcFrameQueue, &frame);
+            vTaskDelay(1);
+        }
     }
 }
 
 void fft_adc_init() {
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_12);
+    if (adc1_config_width(ADC_WIDTH_BIT_12) != ESP_OK ||
+        adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_12) != ESP_OK) {
+        Serial.println(F("[ADC] configuration failed"));
+        return;
+    }
 
-    adcSampleTimer = timerBegin(0, 80, true);   // 80 MHz / 80 = 1 MHz
-    if (!adcSampleTimer) return;
-    timerAttachInterrupt(adcSampleTimer, &adc_sample_isr, true);
-    timerAlarmWrite(adcSampleTimer, 100, true); // 10 kHz
+    adcFrameQueue = xQueueCreate(1, sizeof(AdcFrame));
+    if (!adcFrameQueue) {
+        Serial.println(F("[ADC] frame queue creation failed"));
+        return;
+    }
+
+    if (xTaskCreatePinnedToCore(adc_sampler_task, "AdcSampler", 3072, nullptr, 2, nullptr, 1) != pdPASS) {
+        vQueueDelete(adcFrameQueue);
+        adcFrameQueue = nullptr;
+        Serial.println(F("[ADC] sampler task creation failed"));
+    }
 }
 
-static void fft_sampling_start() {
-    if (!adcSampleTimer) return;
-    adcSampleIndex = 0;
-    adcFrameReady = false;
-    timerAlarmEnable(adcSampleTimer);
-}
+static void fft_sampling_set_enabled(bool enabled) {
+    if (!adcFrameQueue) return;
 
-static void fft_sampling_stop() {
-    if (!adcSampleTimer) return;
-    timerAlarmDisable(adcSampleTimer);
-    adcSampleIndex = 0;
-    adcFrameReady = false;
+    portENTER_CRITICAL(&adcControlMux);
+    bool changed = (adcSamplingEnabled != enabled);
+    if (changed) {
+        adcSamplingEnabled = enabled;
+        ++adcSamplingGeneration;
+    }
+    portEXIT_CRITICAL(&adcControlMux);
+
+    if (changed) xQueueReset(adcFrameQueue);
 }
 
 static void fft_init() {
@@ -87,17 +166,14 @@ static void fft_init() {
 
 // Режим 1: настоящий спектр, столбики снизу вверх
 static bool analyz_fft() {
-    if (!adcFrameReady) return false;
+    AdcFrame frame;
+    if (!adcFrameQueue || xQueueReceive(adcFrameQueue, &frame, 0) != pdTRUE) return false;
+    if (!adc_generation_is_current(frame.generation)) return false;
 
     for (uint16_t i = 0; i < FFT_N; i++) {
-        vReal[i] = adcSamples[i];
+        vReal[i] = frame.samples[i];
         vImag[i] = 0.0f;
     }
-
-    // The ISR ignores samples while the frame is full. Resetting the index
-    // and flag rearms collection while FFT processing continues.
-    adcSampleIndex = 0;
-    adcFrameReady = false;
 
     float mean = 0;
     for (uint16_t i = 0; i < FFT_N; i++) mean += vReal[i];
@@ -187,9 +263,19 @@ static void analyz0(uint8_t vol) {
 // ========================= BLUETOOTH =========================
 void a2dp_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param) {
     if (event == ESP_A2D_CONNECTION_STATE_EVT) {
-        bt_connected = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
-        Serial.printf("[BT] connected = %d\n", bt_connected);
+        bool connected = (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED);
+        portENTER_CRITICAL(&connectionMux);
+        bt_connected = connected;
+        portEXIT_CRITICAL(&connectionMux);
+        Serial.printf("[BT] connected = %d\n", connected);
     }
+}
+
+static bool is_bt_connected() {
+    portENTER_CRITICAL(&connectionMux);
+    bool connected = bt_connected;
+    portEXIT_CRITICAL(&connectionMux);
+    return connected;
 }
 
 // ========================= MATRIX =========================
@@ -305,8 +391,6 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
             case 2:                                    // смена режима рта
                 data.mode = data.mode ? 0 : 1;
                 waveNeedsClear = true;
-                if (data.mode) fft_sampling_start();
-                else fft_sampling_stop();
                 mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
                 mtrx.update();
                 Serial.printf("[mode] %s\n", data.mode ? "spectrum" : "wave");
@@ -354,7 +438,6 @@ void core0(void* p) {
     sound.setPulseMax(80);
 
     fft_init();
-    if (data.mode) fft_sampling_start();
 
     mtrx.begin();
     upd_bright();
@@ -381,18 +464,23 @@ void core0(void* p) {
         memory.tick();
         handle_encoder(eb, sound, angry_tmr, matrix_tmr);
 
+        const bool connected = is_bt_connected();
+        const bool shouldSample = connected && data.state && data.mode == 1 && !matrix_tmr.state();
+        fft_sampling_set_enabled(shouldSample);
+
         // ----- смена состояния подключения -----
-        if (bt_connected != was_connected) {
-            was_connected = bt_connected;
+        if (connected != was_connected) {
+            was_connected = connected;
             mtrx.clear();
-            if (bt_connected) change_state();
+            if (connected) change_state();
             mtrx.update();
         }
 
         // ----- пульс для зрачков -----
         bool snd = false;
         if (data.mode == 0) {
-            snd = sound.tick();                        // в режиме волны — от VolAnalyzer
+            if (!adc_sample_is_active())
+                snd = sound.tick();                    // в режиме волны — от VolAnalyzer
             if (snd && sound.pulse()) pulse = 1;
         } else if (g_beat) {
             g_beat = false;                            // в режиме спектра — от низов
@@ -400,7 +488,7 @@ void core0(void* p) {
         }
 
         // ----- глаза -----
-        if (!bt_connected) {
+        if (!connected) {
             anim_search();
         } else if (data.state && !square_tmr.state() && eye_tmr) {
             draw_eye(0);
@@ -442,7 +530,7 @@ void core0(void* p) {
         // ----- рот -----
         if (matrix_tmr.state()) {
             mouth_cleared = false;                     // шкалу рисует энкодер
-        } else if (bt_connected && data.state) {
+        } else if (connected && data.state) {
             mouth_cleared = false;
             if (data.mode == 0) {
                 if (snd) {
