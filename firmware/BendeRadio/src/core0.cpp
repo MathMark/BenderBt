@@ -347,7 +347,14 @@ void change_state() {
 // ========================= ENCODER =========================
 static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
                            Tmr& angry_tmr, Tmr& matrix_tmr) {
-    if (!eb.tick()) return false;
+    static bool longPressHandled = false;
+    const bool ticked = eb.tick();
+    if (!eb.pressing()) longPressHandled = false;
+    else if (!longPressHandled && eb.pressFor(5000)) {
+        longPressHandled = true;
+        if (is_bt_connected()) btaudio.disconnect();
+    }
+    if (!ticked) return false;
 
     if (eb.turn()) {
         if (eb.pressing()) {
