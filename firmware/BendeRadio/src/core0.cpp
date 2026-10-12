@@ -12,7 +12,7 @@
 #include "btAudio.h"
 #include "tmr.h"
 
-#define VOL_MAX   22
+#define VOL_MAX   19
 #define FFT_N     128      // отсчётов (степень двойки)
 #define FFT_SR    10000    // частота дискретизации, Гц
 #define DEBUG_FFT 0        // 1 — печатать спектр в порт
@@ -276,13 +276,16 @@ void draw_vol(uint8_t v, uint8_t vmax) {
     waveNeedsClear = true;
     mtrx.rect(0, 0, ANALYZ_WIDTH - 1, 7, GFX_CLEAR);
 
-    mtrx.lineH(2, 0, ANALYZ_WIDTH - 1, GFX_FILL);
-    mtrx.lineH(5, 0, ANALYZ_WIDTH - 1, GFX_FILL);
-    mtrx.lineV(0, 2, 5, GFX_FILL);
-    mtrx.lineV(ANALYZ_WIDTH - 1, 2, 5, GFX_FILL);
+    uint8_t steps = min(vmax, (uint8_t)(ANALYZ_WIDTH - 4));
+    uint8_t start = (ANALYZ_WIDTH - steps - 1) / 2;
+    uint8_t end = start + steps + 1;
+    mtrx.lineH(2, start - 1, end, GFX_FILL);
+    mtrx.lineH(5, start - 1, end, GFX_FILL);
+    mtrx.lineV(start - 1, 2, 5, GFX_FILL);
+    mtrx.lineV(end, 2, 5, GFX_FILL);
 
-    uint8_t inner = ANALYZ_WIDTH - 2;
-    uint8_t pos = 1 + (uint32_t)v * (inner - 1) / vmax;
+    v = min(v, vmax);
+    uint8_t pos = start + ((uint32_t)v * steps + vmax / 2) / vmax;
     mtrx.lineV(pos, 3, 4, GFX_FILL);
 
     mtrx.update();
