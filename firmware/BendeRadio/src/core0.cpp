@@ -13,6 +13,7 @@
 #include "tmr.h"
 
 #define VOL_MAX   19
+#define MATRIX_BRIGHT_MAX 4
 #define FFT_N     128      // отсчётов (степень двойки)
 #define FFT_SR    10000    // частота дискретизации, Гц
 #define DEBUG_FFT 0        // 1 — печатать спектр в порт
@@ -353,11 +354,11 @@ static bool handle_encoder(EncButton& eb, VolAnalyzer& sound,
         if (eb.pressing()) {
             switch (eb.getClicks()) {
                 case 0:
-                    data.bright_mouth = constrain(data.bright_mouth + eb.dir(), 0, 16);
+                    data.bright_mouth = constrain(data.bright_mouth + eb.dir(), 0, MATRIX_BRIGHT_MAX);
                     upd_bright();
                     break;
                 case 1:
-                    data.bright_eyes = constrain(data.bright_eyes + eb.dir(), 0, 16);
+                    data.bright_eyes = constrain(data.bright_eyes + eb.dir(), 0, MATRIX_BRIGHT_MAX);
                     upd_bright();
                     break;
             }
@@ -414,8 +415,8 @@ void core0(void* p) {
     memory.begin(0, 'c');
     data.vol          = constrain(data.vol, 0, VOL_MAX);
     data.mode         = constrain(data.mode, 0, 1);
-    data.bright_mouth = constrain(data.bright_mouth, 0, 16);
-    data.bright_eyes  = constrain(data.bright_eyes, 0, 16);
+    data.bright_mouth = constrain(data.bright_mouth, 0, MATRIX_BRIGHT_MAX);
+    data.bright_eyes  = constrain(data.bright_eyes, 0, MATRIX_BRIGHT_MAX);
     data.trsh         = constrain(data.trsh, 100, 2000);
 
     VolAnalyzer sound(ANALYZ_PIN);

@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <Audio.h>
 
 #include "config.h"
 
@@ -13,8 +12,6 @@ struct Data {
     uint8_t mode = 0;
     int8_t station = 0;
 };
-
-extern Audio audio;
 
 void change_state();
 void anim_search();
