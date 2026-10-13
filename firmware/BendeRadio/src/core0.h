@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <Audio.h>
 
 #include "config.h"
 
@@ -14,9 +13,7 @@ struct Data {
     int8_t station = 0;
 };
 
-extern Audio audio;
-extern const char* reconnect;
-
 void change_state();
 void anim_search();
+void fft_adc_init();
 void core0(void *p);

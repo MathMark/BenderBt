@@ -1,27 +1,20 @@
 #include <Arduino.h>
-#include <WiFi.h>
 
+#include "btAudio.h"
 #include "config.h"
 #include "core0.h"
-#include "btAudio.h"
-#include <esp_a2dp_api.h>
 
 TaskHandle_t Task0;
 btAudio btaudio = btAudio("Bender BT");
 
-
-
 void setup() {
-    xTaskCreatePinnedToCore(core0, "Task0", 10000, NULL, 1, &Task0, 0);
     Serial.begin(115200);
-   
-    change_state();
+    delay(500);
+    Serial.println(F("\n=== BOOT ==="));
+    fft_adc_init();  // create the paced ADC sampler task on core 1
+    xTaskCreatePinnedToCore(core0, "Task0", 20480, NULL, 1, &Task0, 0);
 }
 
 void loop() {
-    if (reconnect) {
-        btaudio.volume(15);
-        reconnect = nullptr;
-    }
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
-
